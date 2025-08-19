@@ -1,0 +1,23 @@
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos temporales
+*.tmp
+*.temp
+*~
+
+# Logs
+*.log
+
+# Dependencias de Node (si las usas)
+node_modules/
+
+# Archivos de configuración local
+.env
+.env.local
+
+# Archivos de datos sensibles (opcional)
+# data/*.csv
+# data/*.xml
+
