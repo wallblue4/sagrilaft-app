@@ -21,3 +21,18 @@ node_modules/
 # data/*.csv
 # data/*.xml
 
+
+# Render específico
+.env
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime
+*.log
+.cache/
+dist/
+
+# Render build cache
+.render-buildpack-cache/

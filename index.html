@@ -3,59 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Consulta de Listas Vinculantes (SAGRILAFT)</title>
+  <title>SAGRILAFT - Consulta de Listas Vinculantes</title>
+  <meta name="description" content="Aplicación para consultar listas de sanciones ONU, OFAC y UE en cumplimiento SAGRILAFT">
+  <meta name="keywords" content="SAGRILAFT, sanciones, ONU, OFAC, UE, compliance">
+  
+  <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  
+  <!-- External libs -->
   <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
-  <style>
-    :root {
-      --bg: #0b0f17;
-      --card: #121826;
-      --muted: #6b7280;
-      --text: #e5e7eb;
-      --accent: #60a5fa;
-      --danger: #f87171;
-      --ok: #34d399;
-      --warn: #fbbf24;
-      --border: #1f2937;
-      --chip: #1b2433;
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji"; background: var(--bg); color: var(--text); }
-    header { padding: 28px 20px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: linear-gradient(180deg, rgba(11,15,23,0.98), rgba(11,15,23,0.9)); backdrop-filter: blur(6px); z-index: 20; }
-    h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: 0.2px; }
-    main { max-width: 800px; margin: 0 auto; padding: 24px 20px 56px; }
-    .grid { display: grid; gap: 16px; }
-    .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
-    .card h2 { font-size: 16px; margin: 0 0 12px; }
-    label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
-    input[type="text"], select { width: 100%; background: #0f1522; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; outline: none; }
-    input::placeholder { color: #93a1b3; }
-    .row { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
-    .btn { appearance: none; border: 1px solid var(--border); background: #0f172a; color: var(--text); padding: 10px 14px; border-radius: 12px; cursor: pointer; font-weight: 600; }
-    .btn:hover { border-color: #2a364e; }
-    .btn.primary { background: linear-gradient(135deg, #2563eb, #22c55e); border: none; }
-    .btn.secondary { background: #101827; }
-    .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-    .chip { background: var(--chip); border: 1px solid var(--border); padding: 6px 10px; border-radius: 999px; font-size: 12px; color: #cdd6e5; }
-    .muted { color: var(--muted); font-size: 12px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td { border-bottom: 1px solid var(--border); text-align: left; padding: 10px 8px; vertical-align: top; }
-    th { font-size: 12px; color: #aab4c8; font-weight: 600; white-space: nowrap; }
-    td { font-size: 13px; }
-    .source-ONU { color: #60a5fa; font-weight: 700; }
-    .source-OFAC { color: #34d399; font-weight: 700; }
-    .source-UE { color: #fbbf24; font-weight: 700; }
-    .pill { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: #0f1522; display: inline-block; }
-    .score { font-variant-numeric: tabular-nums; }
-    footer { margin-top: 36px; color: var(--muted); font-size: 12px; }
-    .loading { text-align: center; padding: 20px; }
-  </style>
+  
+  <!-- Styles -->
+  <link rel="stylesheet" href="assets/styles.css">
 </head>
 <body>
   <header>
     <h1>Consulta de Listas Vinculantes: ONU / OFAC / UE — SAGRILAFT</h1>
+    <div class="status-bar">
+      <span id="connectionStatus">🔄 Cargando...</span>
+    </div>
   </header>
   
   <main>
@@ -92,7 +60,7 @@
         </div>
         <p class="muted" style="margin-top:10px;">
           Las listas están pre-cargadas. Todo el procesamiento ocurre 
-          <strong>en tu navegador</strong>. Consulta completamente offline.
+          <strong>en tu navegador</strong>. Los datos no se envían a servidores externos.
         </p>
         <div class="chips" id="chipStatus"></div>
       </section>
@@ -101,29 +69,35 @@
     <section class="card" style="margin-top:16px;">
       <h2>Resultados</h2>
       <div class="chips" id="summary"></div>
-      <table id="tbl">
-        <thead>
-          <tr>
-            <th>Fuente</th>
-            <th>Nombre en lista</th>
-            <th>AKA / Alias</th>
-            <th>Programa / Motivo</th>
-            <th>ID / Nº Ref.</th>
-            <th>Cotejo</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div class="table-container">
+        <table id="tbl">
+          <thead>
+            <tr>
+              <th>Fuente</th>
+              <th>Nombre en lista</th>
+              <th>AKA / Alias</th>
+              <th>Programa / Motivo</th>
+              <th>ID / Nº Ref.</th>
+              <th>Cotejo</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
 
     <footer>
       <p>
-        Uso sugerido en SAGRILAFT: conservar evidencia (capturas/CSV/XML) con fecha y hora de consulta.
+        <strong>Uso en SAGRILAFT:</strong> Conservar evidencia (capturas/informes) con fecha y hora de consulta.
         Esta herramienta es de soporte y <strong>no reemplaza</strong> la verificación en las fuentes oficiales.
+      </p>
+      <p class="version">
+        v1.0.0 | Actualizado: <span id="lastUpdate">Cargando...</span>
       </p>
     </footer>
   </main>
 
+  <!-- Scripts -->
   <script src="assets/app.js"></script>
 </body>
 </html>

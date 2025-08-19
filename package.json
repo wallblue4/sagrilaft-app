@@ -1,0 +1,31 @@
+{
+  "name": "sagrilaft-app",
+  "version": "1.0.0",
+  "description": "SAGRILAFT Sanctions List Search Application",
+  "main": "index.html",
+  "scripts": {
+    "start": "node server.js",
+    "build": "echo 'No build step required for static site'",
+    "dev": "python -m http.server 8000"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "sagrilaft",
+    "sanctions",
+    "compliance",
+    "ofac",
+    "un",
+    "eu"
+  ],
+  "author": "Tu Nombre",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "serve": "^14.0.0"
+  }
+}
