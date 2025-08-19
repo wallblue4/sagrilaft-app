@@ -107,29 +107,61 @@ async function preloadData() {
   
   try {
     const onuResponse = await fetch('./data/consolidated.xml');
+    console.log('📡 ONU Response:', onuResponse.status, onuResponse.statusText);
     if (onuResponse.ok) {
       const xmlText = await onuResponse.text();
+      console.log('📥 ONU descargado, parseando...');
       parseONUXML(xmlText);
     } else {
+      console.error('❌ Error HTTP ONU:', onuResponse.status);
       addChip('ONU: archivo no encontrado');
     }
   } catch(err) {
+    console.error('❌ Error cargando ONU:', err);
     addChip('Error: ONU no disponible');
   }
 
   try {
+    console.log('🌐 Intentando cargar OFAC...');
     const ofacResponse = await fetch('./data/OFAC.csv');
+    console.log('📡 OFAC Response:', ofacResponse.status, ofacResponse.statusText);
     if (ofacResponse.ok) {
       const csvText = await ofacResponse.text();
-      Papa.parse(csvText, { 
-        header: true, 
-        skipEmptyLines: true, 
-        complete: res => parseOFAC(res.data) 
-      });
+      console.log('📥 OFAC descargado, tamaño:', csvText.length);
+      console.log('📄 OFAC primeras 500 chars:', csvText.substring(0, 500));
+      
+      // Detectar si tiene headers
+      const firstLine = csvText.split('\n')[0];
+      const hasHeaders = firstLine.toLowerCase().includes('name') || 
+                        firstLine.toLowerCase().includes('sdn') ||
+                        firstLine.toLowerCase().includes('entity');
+      
+      console.log('🔍 OFAC tiene headers:', hasHeaders);
+      
+      if (!hasHeaders) {
+        // Parsear sin headers usando posiciones fijas
+        parseOFACWithoutHeaders(csvText);
+      } else {
+        // Parsear con headers normal
+        Papa.parse(csvText, { 
+          header: true, 
+          skipEmptyLines: true, 
+          complete: res => {
+            console.log('📊 Papa Parse resultado:', {
+              data: res.data?.length || 0,
+              errors: res.errors?.length || 0,
+              meta: res.meta
+            });
+            parseOFAC(res.data || []);
+          }
+        });
+      }
     } else {
+      console.error('❌ Error HTTP OFAC:', ofacResponse.status);
       addChip('OFAC: archivo no encontrado');
     }
   } catch(err) {
+    console.error('❌ Error cargando OFAC:', err);
     addChip('Error: OFAC no disponible');
   }
 
@@ -173,125 +205,565 @@ async function preloadData() {
 }
 
 // ===================== Parsers =====================
+// ===================== Parser ONU XML Súper Robusto =====================
 function parseONUXML(xmlText) {
+  console.log('📄 Parseando ONU XML, tamaño:', xmlText.length);
+  
   try {
-    const dom = new DOMParser().parseFromString(xmlText, 'application/xml');
-    const err = dom.querySelector('parsererror');
-    if (err) throw new Error('XML inválido');
-    const items = [];
+    // Intentar múltiples métodos de limpieza
+    let cleanXML = xmlText;
     
-    dom.querySelectorAll('INDIVIDUAL, ENTITY').forEach(node => {
-      const names = Array.from(node.querySelectorAll('NAME, FIRST_NAME, SECOND_NAME, THIRD_NAME, FOURTH_NAME, NAME_ORIGINAL_SCRIPT'))
-        .map(n => n.textContent).filter(Boolean);
-      const aka = Array.from(node.querySelectorAll('ALIAS_NAME, ALIAS')).map(n => n.textContent).filter(Boolean).join(' | ');
-      const ref = node.querySelector('REFERENCE_NUMBER, DATAID, UNIQUE_ID');
-      const program = Array.from(node.querySelectorAll('UN_LIST_TYPE, LIST_TYPE, COMMENTS1, REMARKS'))
-        .map(n => n.textContent).filter(Boolean).join(' | ');
+    // Método 1: Limpiar caracteres de control
+    cleanXML = cleanXML.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '');
+    
+    // Método 2: Escapar caracteres problemáticos
+    cleanXML = cleanXML.replace(/&(?![a-zA-Z0-9#]{1,8};)/g, '&amp;');
+    
+    // Método 3: Remover caracteres Unicode problemáticos
+    cleanXML = cleanXML.replace(/[\uFFFE\uFFFF]/g, '');
+    
+    console.log('🧹 XML limpiado, tamaño:', cleanXML.length);
+    
+    // Intentar parsear
+    const dom = new DOMParser().parseFromString(cleanXML, 'application/xml');
+    const err = dom.querySelector('parsererror');
+    
+    if (err) {
+      console.warn('⚠️ Error en DOM Parser, usando método regex:', err.textContent);
+      return parseONUWithRegex(xmlText);
+    }
+    
+    return parseONUWithDOM(dom);
+    
+  } catch(e) {
+    console.error('❌ Error general ONU:', e);
+    console.log('🔄 Fallback a método regex...');
+    return parseONUWithRegex(xmlText);
+  }
+}
+
+function parseONUWithDOM(dom) {
+  const items = [];
+  const individuals = dom.querySelectorAll('INDIVIDUAL');
+  const entities = dom.querySelectorAll('ENTITY');
+  
+  console.log(`🔍 ONU DOM: ${individuals.length} individuos, ${entities.length} entidades`);
+  
+  dom.querySelectorAll('INDIVIDUAL, ENTITY').forEach((node, index) => {
+    try {
+      const names = Array.from(node.querySelectorAll('NAME, FIRST_NAME, SECOND_NAME, THIRD_NAME, FOURTH_NAME'))
+        .map(n => n.textContent?.trim()).filter(Boolean);
+      
       const name = names.join(' ').trim();
-      if (name) items.push({ source:'ONU', name, aka, program, ref: ref? ref.textContent : '' });
+      if (!name) return;
+      
+      const aka = Array.from(node.querySelectorAll('ALIAS_NAME, ALIAS'))
+        .map(n => n.textContent?.trim()).filter(Boolean).join(' | ');
+      
+      const ref = node.querySelector('REFERENCE_NUMBER, DATAID, UNIQUE_ID')?.textContent?.trim() || '';
+      
+      const program = Array.from(node.querySelectorAll('UN_LIST_TYPE, LIST_TYPE'))
+        .map(n => n.textContent?.trim()).filter(Boolean).join(' | ');
+      
+      items.push({ source: 'ONU', name, aka, program, ref });
+      
+      if (index < 3) console.log('➕ ONU DOM:', name);
+    } catch (nodeError) {
+      console.warn('⚠️ Error nodo ONU:', nodeError);
+    }
+  });
+  
+  store.ONU = items;
+  store.loaded.ONU = true;
+  updateSummary();
+  console.log(`✅ ONU DOM: ${items.length} registros`);
+  return items;
+}
+
+function parseONUWithRegex(xmlText) {
+  console.log('🔄 Parseando ONU con regex...');
+  const items = [];
+  
+  try {
+    // Regex para extraer bloques INDIVIDUAL y ENTITY
+    const blockRegex = /<(INDIVIDUAL|ENTITY)[^>]*>([\s\S]*?)<\/\1>/gi;
+    const blocks = Array.from(xmlText.matchAll(blockRegex));
+    
+    console.log(`🔍 ONU Regex: encontrados ${blocks.length} bloques`);
+    
+    blocks.forEach((block, index) => {
+      try {
+        const content = block[2];
+        
+        // Extraer nombres
+        const names = [];
+        
+        // Buscar diferentes tipos de nombres
+        const namePatterns = [
+          /<FIRST_NAME[^>]*>(.*?)<\/FIRST_NAME>/i,
+          /<SECOND_NAME[^>]*>(.*?)<\/SECOND_NAME>/i,
+          /<THIRD_NAME[^>]*>(.*?)<\/THIRD_NAME>/i,
+          /<NAME[^>]*>(.*?)<\/NAME>/i
+        ];
+        
+        namePatterns.forEach(pattern => {
+          const match = content.match(pattern);
+          if (match && match[1]?.trim()) {
+            names.push(match[1].trim());
+          }
+        });
+        
+        const name = names.join(' ').trim();
+        if (!name) return;
+        
+        // Extraer referencia
+        const refMatch = content.match(/<REFERENCE_NUMBER[^>]*>(.*?)<\/REFERENCE_NUMBER>/i) ||
+                        content.match(/<DATAID[^>]*>(.*?)<\/DATAID>/i);
+        const ref = refMatch ? refMatch[1].trim() : '';
+        
+        // Extraer programa
+        const programMatch = content.match(/<UN_LIST_TYPE[^>]*>(.*?)<\/UN_LIST_TYPE>/i);
+        const program = programMatch ? programMatch[1].trim() : '';
+        
+        items.push({ source: 'ONU', name, aka: '', program, ref });
+        
+        if (index < 3) console.log('➕ ONU Regex:', name);
+      } catch (blockError) {
+        console.warn('⚠️ Error bloque ONU:', blockError);
+      }
     });
     
-    store.ONU = items; 
-    store.loaded.ONU = true; 
+    store.ONU = items;
+    store.loaded.ONU = true;
     updateSummary();
-    console.log(`ONU: ${items.length} registros cargados`);
-  } catch(e) {
-    console.error('Error parseando ONU:', e);
-    addChip('Error leyendo ONU');
+    console.log(`✅ ONU Regex: ${items.length} registros`);
+    return items;
+    
+  } catch (e) {
+    console.error('❌ Error regex ONU:', e);
+    addChip('Error: ONU no pudo procesarse');
+    return [];
+  }
+}
+
+function parseOFACWithoutHeaders(csvText) {
+  console.log('📄 Parseando OFAC CSV sin headers...');
+  const items = [];
+  
+  try {
+    Papa.parse(csvText, {
+      header: false, // Sin headers
+      skipEmptyLines: true,
+      complete: res => {
+        console.log('📊 OFAC filas procesadas:', res.data?.length || 0);
+        
+        if (!res.data || res.data.length === 0) {
+          console.warn('⚠️ OFAC: No hay datos');
+          return;
+        }
+        
+        // Log de estructura para entender formato
+        console.log('🔍 OFAC primera fila:', res.data[0]);
+        console.log('🔍 OFAC estructura detectada:', res.data[0]?.length, 'columnas');
+        
+        res.data.forEach((row, index) => {
+          try {
+            if (!row || row.length < 2) return;
+            
+            // Formato típico OFAC: [id, name, type, program, ...]
+            // Basado en tu ejemplo: 9639,"HANIYA, Ismail Abdul Salah","individual","NS-PLC"
+            
+            let name = '';
+            let program = '';
+            let ref = '';
+            let type = '';
+            
+            // Columna 0: ID/Reference
+            if (row[0]) ref = row[0].toString().trim();
+            
+            // Columna 1: Name (más probable)
+            if (row[1]) name = row[1].toString().trim().replace(/"/g, '');
+            
+            // Columna 2: Type
+            if (row[2]) type = row[2].toString().trim().replace(/"/g, '');
+            
+            // Columna 3: Program
+            if (row[3]) program = row[3].toString().trim().replace(/"/g, '');
+            
+            // Validar que tenemos datos mínimos
+            if (!name || name === '-0-' || name.length < 2) return;
+            
+            items.push({ 
+              source: 'OFAC', 
+              name, 
+              aka: '', 
+              program: program || type, 
+              ref 
+            });
+            
+            if (index < 5) console.log(`➕ OFAC sin headers: ${name} (${program})`);
+            
+          } catch (rowError) {
+            console.warn('⚠️ Error procesando fila OFAC:', rowError);
+          }
+        });
+        
+        store.OFAC = items;
+        store.loaded.OFAC = true;
+        updateSummary();
+        console.log(`✅ OFAC sin headers: ${items.length} registros cargados`);
+      },
+      error: err => {
+        console.error('❌ Error Papa Parse OFAC:', err);
+        addChip('Error parseando OFAC CSV');
+      }
+    });
+    
+  } catch (e) {
+    console.error('❌ Error general OFAC sin headers:', e);
+    addChip('Error: OFAC no pudo procesarse');
   }
 }
 
 
-// ===================== Parser UE XML =====================
+
+// ===================== Parser UE XML Súper Robusto =====================
 function parseEUXML(xmlText) {
+  console.log('📄 Parseando UE XML, tamaño:', xmlText.length);
+  
   try {
-    const dom = new DOMParser().parseFromString(xmlText, 'application/xml');
+    // Limpiar XML
+    let cleanXML = xmlText
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+      .replace(/&(?![a-zA-Z0-9#]{1,8};)/g, '&amp;')
+      .replace(/[\uFFFE\uFFFF]/g, '');
+    
+    console.log('🧹 UE XML limpiado, tamaño:', cleanXML.length);
+    
+    const dom = new DOMParser().parseFromString(cleanXML, 'application/xml');
     const err = dom.querySelector('parsererror');
-    if (err) throw new Error('XML inválido');
-    const items = [];
     
-    // Adaptarse a diferentes estructuras XML de la UE
-    const entities = dom.querySelectorAll('sanctionEntity, entity, subject, person, organisation');
+    if (err) {
+      console.warn('⚠️ Error en DOM Parser UE, usando regex:', err.textContent);
+      return parseEUWithRegex(xmlText);
+    }
     
-    entities.forEach(node => {
-      // Buscar nombres en diferentes campos posibles
-      const nameFields = [
-        'wholeName', 'name', 'nameAlias', 'firstName', 'lastName', 
+    return parseEUWithDOM(dom);
+    
+  } catch(e) {
+    console.error('❌ Error general UE:', e);
+    return parseEUWithRegex(xmlText);
+  }
+}
+
+function parseEUWithDOM(dom) {
+  const items = [];
+  const entities = dom.querySelectorAll('sanctionEntity, entity, subject, person, organisation');
+  
+  console.log(`🔍 UE DOM: ${entities.length} entidades`);
+  
+  entities.forEach((node, index) => {
+    try {
+      // Buscar nombre en múltiples campos
+      const nameSelectors = [
+        'wholeName', 'name', 'formattedFullName', 'firstName', 'lastName',
         'organisationName', 'entityName', 'subjectName'
       ];
       
       let name = '';
-      for (const field of nameFields) {
-        const nameNode = node.querySelector(field) || 
-                         node.querySelector(field.toLowerCase()) ||
-                         node.querySelector(field.toUpperCase());
-        if (nameNode && nameNode.textContent.trim()) {
+      for (const selector of nameSelectors) {
+        const nameNode = node.querySelector(selector);
+        if (nameNode?.textContent?.trim()) {
           name = nameNode.textContent.trim();
           break;
         }
       }
       
-      // Si no encontramos nombre en subcampos, buscar en atributos
-      if (!name) {
-        name = node.getAttribute('name') || 
-               node.getAttribute('wholeName') || 
-               node.textContent?.trim() || '';
-      }
+      if (!name) name = node.getAttribute('name') || '';
+      if (!name) return;
       
-      // Buscar alias/nombres alternativos
-      const aliasNodes = node.querySelectorAll('nameAlias, alias, aka, alternativeName');
-      const aka = Array.from(aliasNodes)
-        .map(n => n.textContent || n.getAttribute('name') || '')
-        .filter(Boolean)
-        .join(' | ');
+      // Buscar otros campos
+      const aka = Array.from(node.querySelectorAll('nameAlias, alias'))
+        .map(n => n.textContent?.trim()).filter(Boolean).join(' | ');
       
-      // Buscar programa/régimen
-      const programNodes = node.querySelectorAll('programme, regime, regulation, sanctionsProgramme, remark');
-      const program = Array.from(programNodes)
-        .map(n => n.textContent || n.getAttribute('value') || '')
-        .filter(Boolean)
-        .join(' | ');
+      const program = node.querySelector('programme')?.textContent?.trim() || '';
+      const ref = node.querySelector('euReferenceNumber, logicalId')?.textContent?.trim() || 
+                 node.getAttribute('euReferenceNumber') || '';
       
-      // Buscar referencia/ID
-      const refNodes = node.querySelectorAll('euReferenceNumber, referenceNumber, logicalId, euId, id');
-      const ref = refNodes.length > 0 ? 
-        (refNodes[0].textContent || refNodes[0].getAttribute('value') || '') :
-        (node.getAttribute('euReferenceNumber') || node.getAttribute('id') || '');
+      items.push({ source: 'UE', name, aka, program, ref });
       
-      if (name) {
-        items.push({ 
-          source: 'UE', 
-          name, 
-          aka, 
-          program, 
-          ref 
-        });
-      }
+      if (index < 3) console.log('➕ UE DOM:', name);
+    } catch (nodeError) {
+      console.warn('⚠️ Error nodo UE:', nodeError);
+    }
+  });
+  
+  store.UE = items;
+  store.loaded.UE = true;
+  updateSummary();
+  console.log(`✅ UE DOM: ${items.length} registros`);
+  return items;
+}
+
+// ===================== Parser UE Regex Mejorado =====================
+function parseEUWithRegex(xmlText) {
+  console.log('🔄 Parseando UE con regex...');
+  const items = [];
+  
+  try {
+    // Intentar múltiples patrones de entidades
+    const patterns = [
+      /<sanctionEntity[^>]*>([\s\S]*?)<\/sanctionEntity>/gi,
+      /<entity[^>]*>([\s\S]*?)<\/entity>/gi,
+      /<subject[^>]*>([\s\S]*?)<\/subject>/gi,
+      /<person[^>]*>([\s\S]*?)<\/person>/gi,
+      /<organisation[^>]*>([\s\S]*?)<\/organisation>/gi
+    ];
+    
+    let totalEntities = 0;
+    
+    patterns.forEach((pattern, patternIndex) => {
+      const entities = Array.from(xmlText.matchAll(pattern));
+      console.log(`🔍 UE Patrón ${patternIndex + 1}: ${entities.length} entidades`);
+      totalEntities += entities.length;
+      
+      entities.forEach((entity, index) => {
+        try {
+          const content = entity[1];
+          
+          // Buscar nombre con múltiples patrones
+          const namePatterns = [
+            /<wholeName[^>]*>(.*?)<\/wholeName>/i,
+            /<formattedFullName[^>]*>(.*?)<\/formattedFullName>/i,
+            /<name[^>]*>(.*?)<\/name>/i,
+            /<firstName[^>]*>(.*?)<\/firstName>/i,
+            /<lastName[^>]*>(.*?)<\/lastName>/i,
+            /<formattedFirstName[^>]*>(.*?)<\/formattedFirstName>/i,
+            /<formattedLastName[^>]*>(.*?)<\/formattedLastName>/i
+          ];
+          
+          let name = '';
+          let foundNames = [];
+          
+          namePatterns.forEach(pattern => {
+            const match = content.match(pattern);
+            if (match && match[1]?.trim()) {
+              foundNames.push(match[1].trim());
+            }
+          });
+          
+          // Combinar nombres encontrados
+          if (foundNames.length > 0) {
+            name = foundNames.join(' ').trim();
+            // Limpiar nombre de caracteres problemáticos
+            name = name.replace(/[^\w\s\-\.]/g, ' ').replace(/\s+/g, ' ').trim();
+          }
+          
+          if (!name) return;
+          
+          // Extraer otros campos
+          const programMatch = content.match(/<programme[^>]*>(.*?)<\/programme>/i) ||
+                              content.match(/<regulation[^>]*>(.*?)<\/regulation>/i) ||
+                              content.match(/<regime[^>]*>(.*?)<\/regime>/i);
+          const program = programMatch ? programMatch[1].trim() : '';
+          
+          const refMatch = content.match(/<euReferenceNumber[^>]*>(.*?)<\/euReferenceNumber>/i) ||
+                          content.match(/<referenceNumber[^>]*>(.*?)<\/referenceNumber>/i) ||
+                          content.match(/<logicalId[^>]*>(.*?)<\/logicalId>/i);
+          const ref = refMatch ? refMatch[1].trim() : '';
+          
+          items.push({ source: 'UE', name, aka: '', program, ref });
+          
+          if (index < 3) console.log(`➕ UE Regex (patrón ${patternIndex + 1}):`, name);
+        } catch (blockError) {
+          console.warn('⚠️ Error bloque UE:', blockError);
+        }
+      });
     });
     
-    store.UE = items; 
-    store.loaded.UE = true; 
+    console.log(`🔍 UE Total encontradas: ${totalEntities} entidades`);
+    
+    store.UE = items;
+    store.loaded.UE = true;
     updateSummary();
-    console.log(`UE: ${items.length} registros cargados desde XML`);
-  } catch(e) {
-    console.error('Error parseando UE XML:', e);
-    addChip('Error leyendo UE XML');
+    console.log(`✅ UE Regex: ${items.length} registros`);
+    return items;
+    
+  } catch (e) {
+    console.error('❌ Error regex UE:', e);
+    addChip('Error: UE no pudo procesarse');
+    return [];
   }
 }
 
+// ===================== Parser UE XML =====================
+// function parseEUXML(xmlText) {
+//   try {
+//     const dom = new DOMParser().parseFromString(xmlText, 'application/xml');
+//     const err = dom.querySelector('parsererror');
+//     if (err) throw new Error('XML inválido');
+//     const items = [];
+    
+//     // Adaptarse a diferentes estructuras XML de la UE
+//     const entities = dom.querySelectorAll('sanctionEntity, entity, subject, person, organisation');
+    
+//     entities.forEach(node => {
+//       // Buscar nombres en diferentes campos posibles
+//       const nameFields = [
+//         'wholeName', 'name', 'nameAlias', 'firstName', 'lastName', 
+//         'organisationName', 'entityName', 'subjectName'
+//       ];
+      
+//       let name = '';
+//       for (const field of nameFields) {
+//         const nameNode = node.querySelector(field) || 
+//                          node.querySelector(field.toLowerCase()) ||
+//                          node.querySelector(field.toUpperCase());
+//         if (nameNode && nameNode.textContent.trim()) {
+//           name = nameNode.textContent.trim();
+//           break;
+//         }
+//       }
+      
+//       // Si no encontramos nombre en subcampos, buscar en atributos
+//       if (!name) {
+//         name = node.getAttribute('name') || 
+//                node.getAttribute('wholeName') || 
+//                node.textContent?.trim() || '';
+//       }
+      
+//       // Buscar alias/nombres alternativos
+//       const aliasNodes = node.querySelectorAll('nameAlias, alias, aka, alternativeName');
+//       const aka = Array.from(aliasNodes)
+//         .map(n => n.textContent || n.getAttribute('name') || '')
+//         .filter(Boolean)
+//         .join(' | ');
+      
+//       // Buscar programa/régimen
+//       const programNodes = node.querySelectorAll('programme, regime, regulation, sanctionsProgramme, remark');
+//       const program = Array.from(programNodes)
+//         .map(n => n.textContent || n.getAttribute('value') || '')
+//         .filter(Boolean)
+//         .join(' | ');
+      
+//       // Buscar referencia/ID
+//       const refNodes = node.querySelectorAll('euReferenceNumber, referenceNumber, logicalId, euId, id');
+//       const ref = refNodes.length > 0 ? 
+//         (refNodes[0].textContent || refNodes[0].getAttribute('value') || '') :
+//         (node.getAttribute('euReferenceNumber') || node.getAttribute('id') || '');
+      
+//       if (name) {
+//         items.push({ 
+//           source: 'UE', 
+//           name, 
+//           aka, 
+//           program, 
+//           ref 
+//         });
+//       }
+//     });
+    
+//     store.UE = items; 
+//     store.loaded.UE = true; 
+//     updateSummary();
+//     console.log(`UE: ${items.length} registros cargados desde XML`);
+//   } catch(e) {
+//     console.error('Error parseando UE XML:', e);
+//     addChip('Error leyendo UE XML');
+//   }
+// }
+
+// ===================== Parser OFAC Mejorado =====================
 function parseOFAC(rows) {
+  console.log(`📄 Parseando OFAC CSV, ${rows.length} filas`);
   const items = [];
-  for (const r of rows) {
-    const name = r.name || r.sdnName || r.SDN_NAME || r['SDN Name'] || r['sdnName'] || r['Entity Name'] || r['name'];
-    const aka = r['akaList'] || r['AKA'] || r['aka'] || r['AKA List'] || r['akaList.sdnEntry.aka'] || '';
-    const program = r.program || r['Program'] || r['programList'] || r['Program List'] || '';
-    const ref = r['uid'] || r['ent_num'] || r['ID'] || r['sdnId'] || '';
-    if (name) items.push({ source:'OFAC', name, aka, program, ref });
+  
+  if (!rows || rows.length === 0) {
+    console.warn('⚠️ OFAC: No hay filas para procesar');
+    addChip('OFAC: archivo CSV vacío');
+    return;
   }
+  
+  // Log de las primeras filas para debugging
+  console.log('🔍 OFAC primeras 3 filas:', rows.slice(0, 3));
+  
+  // Detectar nombres de columnas
+  const firstRow = rows[0];
+  const possibleNameFields = Object.keys(firstRow).filter(key => 
+    key.toLowerCase().includes('name') || 
+    key.toLowerCase().includes('sdn')
+  );
+  
+  console.log('🔍 OFAC campos de nombre detectados:', possibleNameFields);
+  
+  for (const r of rows) {
+    try {
+      // Buscar nombre en múltiples campos posibles
+      const nameFields = [
+        'name', 'sdnName', 'SDN_NAME', 'SDN Name', 'sdnName', 
+        'Entity Name', 'entityName', 'fullName', 'lastName', 'firstName'
+      ];
+      
+      let name = '';
+      for (const field of nameFields) {
+        if (r[field] && r[field].trim()) {
+          name = r[field].trim();
+          break;
+        }
+      }
+      
+      // Si no encontramos nombre, usar el primer campo que contenga algo
+      if (!name) {
+        for (const [key, value] of Object.entries(r)) {
+          if (value && typeof value === 'string' && value.trim() && 
+              key.toLowerCase().includes('name')) {
+            name = value.trim();
+            break;
+          }
+        }
+      }
+      
+      if (!name) continue;
+      
+      // Buscar otros campos
+      const akaFields = ['akaList', 'AKA', 'aka', 'AKA List', 'aliases', 'alias'];
+      let aka = '';
+      for (const field of akaFields) {
+        if (r[field] && r[field].trim()) {
+          aka = r[field].trim();
+          break;
+        }
+      }
+      
+      const programFields = ['program', 'Program', 'programList', 'Program List', 'sanctions'];
+      let program = '';
+      for (const field of programFields) {
+        if (r[field] && r[field].trim()) {
+          program = r[field].trim();
+          break;
+        }
+      }
+      
+      const refFields = ['uid', 'ent_num', 'ID', 'sdnId', 'id', 'uniqueID'];
+      let ref = '';
+      for (const field of refFields) {
+        if (r[field] && r[field].toString().trim()) {
+          ref = r[field].toString().trim();
+          break;
+        }
+      }
+      
+      items.push({ source: 'OFAC', name, aka, program, ref });
+      
+    } catch (rowError) {
+      console.warn('⚠️ Error procesando fila OFAC:', rowError);
+    }
+  }
+  
   store.OFAC = items; 
   store.loaded.OFAC = true; 
   updateSummary();
-  console.log(`OFAC: ${items.length} registros cargados`);
+  console.log(`✅ OFAC: ${items.length} registros cargados`);
 }
 
 function parseEU(rows) {
